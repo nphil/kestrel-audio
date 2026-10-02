@@ -26,6 +26,7 @@ BREAKER_SECONDS = 600
 HELLO_TIMEOUT_S = 60
 STOP_GRACE_S = 15
 MAX_ATTEMPTS = 2
+SWITCH_MARGIN_MIB = 512
 
 
 class WorkerGone(RuntimeError):
@@ -33,8 +34,10 @@ class WorkerGone(RuntimeError):
 
 
 class Manager:
-    def __init__(self, cfg: Config, store: Store, *, probe: Callable[[], gpu.GpuInfo] = gpu.query):
+    def __init__(self, cfg: Config, store: Store, *, probe: Callable[[], gpu.GpuInfo] = gpu.query,
+                 worker_cmd: list[str] | None = None):
         self.cfg, self.store, self._probe = cfg, store, probe
+        self._worker_cmd = worker_cmd or [sys.executable, "-m", "kestrel_audio.worker"]
         self._proc: asyncio.subprocess.Process | None = None
         self._device: str | None = None
         self._last_activity = time.monotonic()
@@ -96,7 +99,13 @@ class Manager:
             # our own worker already holds its memory: judge the room as if it were not there
             free += self.vram_mib or 0
             info = gpu.GpuInfo(info.available, info.name, free, info.total_mib)
-        return gpu.choose_device(info, min_free_mib=self.cfg.min_free_vram_mib, breaker_open=self.breaker_open(), forced=self.cfg.device)
+        dev, reason = gpu.choose_device(info, min_free_mib=self.cfg.min_free_vram_mib, breaker_open=self.breaker_open(), forced=self.cfg.device)
+        if dev == "cuda" and self._proc is not None and self._device == "cpu" and self.cfg.device == "auto":
+            # a CPU worker is already running: only move to the GPU when there is comfortable room, so a GPU that hovers
+            # around the threshold does not make the worker restart (and reload its models) on every clip
+            if (info.free_mib or 0) < self.cfg.min_free_vram_mib + SWITCH_MARGIN_MIB:
+                return "cpu", f"staying on the CPU worker (only {info.free_mib} MiB free on the GPU)"
+        return dev, reason
 
     def _note_error(self, det: int | None, text: str) -> None:
         log.warning("%s%s", f"job {det}: " if det is not None else "", text)
@@ -105,6 +114,7 @@ class Manager:
     # ------------------------------------------------------------------ main loop
     async def _loop(self) -> None:
         while True:
+            job: Job | None = None
             try:
                 job = self.store.claim_next()
                 if job is None:
@@ -121,8 +131,12 @@ class Manager:
                 await self._run_job(job)
             except asyncio.CancelledError:
                 raise
-            except Exception:                              # never let the loop die
+            except Exception as exc:                       # never let the loop die, and never leave a claimed job hanging
                 log.exception("queue loop error")
+                if job is not None:
+                    current = self.store.get(job.detection_id)
+                    if current is not None and current.state == "running":
+                        self.store.fail(job.detection_id, f"internal error: {type(exc).__name__}: {exc}"[:300])
                 await asyncio.sleep(2)
 
     def _idle_remaining(self) -> float | None:
@@ -212,7 +226,7 @@ class Manager:
 
         log.info("starting a %s worker (%s)", device, why)
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "kestrel_audio.worker", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            *self._worker_cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, env=env, preexec_fn=_lower_priority)
         self._proc, self._device = proc, device
         self._stderr_task = asyncio.create_task(self._pump_stderr(proc))

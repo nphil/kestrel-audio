@@ -20,12 +20,17 @@ from . import config
 from .codec import AudioError
 from .pipeline import PreviewError
 
-_GPU_ERROR_HINTS = ("cuda", "cudnn", "cublas", "out of memory", "oom", "no kernel image", "device-side", "gpu_mem_limit")
+_GPU_ERROR_HINTS = ("cuda", "cudnn", "cublas", "out of memory", "oom", "no kernel image", "device-side", "gpu_mem_limit",
+                    "bfc_arena", "bfcarena", "failed to allocate")
 
 
-def looks_like_gpu_fault(exc: BaseException) -> bool:
+def looks_like_gpu_fault(exc: BaseException, device: str = "cuda") -> bool:
+    """A GPU problem (worth retrying on the CPU) rather than a bad clip. Anything onnxruntime itself raises while running on
+    the GPU counts, because its allocator errors do not name the GPU."""
     text = f"{type(exc).__name__} {exc}".lower()
-    return any(h in text for h in _GPU_ERROR_HINTS)
+    if any(h in text for h in _GPU_ERROR_HINTS):
+        return True
+    return device == "cuda" and type(exc).__module__.startswith("onnxruntime")
 
 
 def main() -> int:
@@ -42,7 +47,7 @@ def main() -> int:
         from .engine import Engine
         engine = Engine(cfg, device)
     except BaseException as exc:                    # noqa: BLE001
-        send({"event": "error", "id": None, "error": f"worker failed to start: {exc}", "gpu": looks_like_gpu_fault(exc)})
+        send({"event": "error", "id": None, "error": f"worker failed to start: {exc}", "gpu": looks_like_gpu_fault(exc, device)})
         return 2
     send({"event": "hello", "device": device, "pid": os.getpid()})
 
@@ -67,7 +72,7 @@ def main() -> int:
             send({"event": "failed", "id": det, "error": str(exc)})
         except BaseException as exc:                # noqa: BLE001
             traceback.print_exc()
-            send({"event": "error", "id": det, "error": f"{type(exc).__name__}: {exc}"[:400], "gpu": looks_like_gpu_fault(exc)})
+            send({"event": "error", "id": det, "error": f"{type(exc).__name__}: {exc}"[:400], "gpu": looks_like_gpu_fault(exc, device)})
     return 0
 
 
