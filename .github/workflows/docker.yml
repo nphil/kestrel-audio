@@ -91,7 +91,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
 
-      - name: Smoke test the image (CPU path: no GPU on the runner)
+      - name: Smoke test the image on the CPU path (the runner has no GPU)
         run: python3 tools/smoke_test.py kestrel-audio:smoke
 
       - name: Build and push
