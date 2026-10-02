@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import threading
+from typing import Callable
 from dataclasses import dataclass
 
 
@@ -85,23 +86,33 @@ def compute_processes() -> dict[int, int]:
 
 
 class Footprint:
-    """What THIS process holds on the GPU. A container cannot see its own host PID, so the processes that already used the
-    GPU when this was created are remembered, and anything new that appears afterwards is counted as ours.
+    """What THIS process holds on the GPU. A container cannot see its own host PID, and on a shared GPU other programs
+    start and stop all the time, so the PID is learnt once, at the moment our own CUDA context appears: the processes that
+    already used the GPU are remembered when this is created, and `claim()` (called right after the first model is loaded)
+    says "that one is us" only if exactly ONE new process is there. Zero or several (another program started in the same few
+    seconds) is reported as unknown (None) rather than guessed: counting every newcomer as ours would blame other
+    programs' memory on this service.
     NVML stays initialised for the life of the object, which keeps a sample cheap enough to take ten times a second."""
 
-    def __init__(self) -> None:
+    def __init__(self, table: "Callable[[], dict[int, int]] | None" = None) -> None:
         self._nvml = None
         self._handle = None
-        try:
-            import pynvml
-            pynvml.nvmlInit()
-            self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            self._nvml = pynvml
-        except Exception:
-            self._nvml = None
+        self._table_fn = table
+        if table is None:
+            try:
+                import pynvml
+                pynvml.nvmlInit()
+                self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                self._nvml = pynvml
+            except Exception:
+                self._nvml = None
         self._before = set(self._table())
+        self._mine: int | None = None
+        self.claimed = False        # claim() ran (successfully or not)
 
     def _table(self) -> dict[int, int]:
+        if self._table_fn is not None:
+            return self._table_fn()
         if self._nvml is not None:
             try:
                 procs = self._nvml.nvmlDeviceGetComputeRunningProcesses(self._handle)
@@ -110,11 +121,20 @@ class Footprint:
                 pass
         return compute_processes()
 
+    def claim(self) -> int | None:
+        """Pin our PID: call once, right after the first CUDA session has been created. Returns it, or None if unknown."""
+        if self.claimed:
+            return self._mine
+        new = [pid for pid in self._table() if pid not in self._before]
+        self._mine = new[0] if len(new) == 1 else None
+        self.claimed = True
+        return self._mine
+
     def mib(self) -> int | None:
-        table = self._table()
-        if not table and not self._before:
+        """GPU memory this process holds now, or None when it cannot be told apart from other programs' (or is not loaded)."""
+        if self._mine is None:
             return None
-        return sum(m for pid, m in table.items() if pid not in self._before)
+        return self._table().get(self._mine)
 
 
 class PeakSampler:

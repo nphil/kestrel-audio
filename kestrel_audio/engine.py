@@ -26,7 +26,7 @@ class Engine:
         self._perch: OrtPerch | None = None
         self._separators: list[LazySeparator] | None = None
         self.codec = AacCodec()
-        self.footprint = gpu.Footprint() if device == "cuda" else None    # remembers who used the GPU before we did
+        self.footprint = gpu.Footprint() if device == "cuda" else None    # remembers who used the GPU before we did; claim() pins our PID
         self.last_peak_mib: int | None = None
 
     # GPU budget (cfg.gpu_cap_mib, default 1500 MiB for the whole process). Between runs only the weights stay resident
@@ -44,6 +44,8 @@ class Engine:
             gpu_mode = self.device == "cuda"
             self._perch = OrtPerch(self.cfg.models_dir, device=self.device, threads=self.cfg.cpu_threads, vram_mib=self.cfg.perch_arena_mib,
                                    batch=self.cfg.perch_batch_gpu if gpu_mode else self.cfg.perch_batch_cpu)
+            if self.footprint is not None:
+                self.footprint.claim()          # our CUDA context exists now: learn which GPU process is us
         return self._perch
 
     @property

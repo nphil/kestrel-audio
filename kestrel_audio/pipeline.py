@@ -12,7 +12,7 @@ import numpy as np
 from . import dsp
 from .candidates import METHOD_TRIM, gate_variants, method_of, separated_variants
 from .codec import OUT_SR, SR, AacCodec, to_output_rate
-from .locate import WIN, Segment, fallback_segment, pick_segment, whole_clip_segment
+from .locate import MIN_EVIDENCE, WIN, Segment, fallback_segment, pick_segment, whole_clip_segment
 from .loudness import NormInfo, fade, loudness_clean, lufs, normalize, prescale, trim_to_true_peak
 from .scoring import Scorer
 from .verify import Candidate, Reference, Decision, TOLERANCE, choose, select_sources
@@ -95,6 +95,11 @@ def make_preview(x22: np.ndarray, *, species_idx: int | None, scorer: Scorer | N
         if seg is None:
             seg = fallback_segment(dur)
             notes.append("Perch never heard the species in this clip; used BirdNET-Go's own detection window")
+        elif seg.best_conf < MIN_EVIDENCE:
+            # a noise-level curve has no real peak, and a clean-up cannot be checked against a score that low (the check
+            # "not worse than the untouched moment minus 0.02" would pass for anything)
+            notes.append(f"Perch is barely sure of the species in this clip (best {seg.best_conf:.2f}); used BirdNET-Go's own detection window and did not clean")
+            seg = fallback_segment(dur)
     else:
         seg = fallback_segment(dur)
         notes.append("the species is unknown to Perch; used BirdNET-Go's own detection window")

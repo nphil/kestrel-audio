@@ -80,7 +80,8 @@ An Unraid container (`ghcr.io/nphil/kestrel-audio`), next to the GPU apps. It is
 * Perch is the judge of its own work, so a result it likes is a result it likes: the safety check guards against damage, it is
   not a second opinion.
 * A clip whose species Perch does not know (or that arrives without a scientific name) gets BirdNET-Go's own detection window,
-  made loud and never cleaned.
+  made loud and never cleaned. The same goes for a clip where Perch is barely sure of the animal (its best match is under 10%):
+  there is no real moment to find, and a clean-up could not be checked against such a low score.
 
 ## Licence
 

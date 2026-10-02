@@ -39,7 +39,7 @@ DELETE /v1/previews/<detection_id>       -> 200 {"deleted": true|false}       (i
 |---|---|
 | `detectionId` | the id you posted |
 | `state` | `pending` (queued or running), `ready`, or `failed` |
-| `segment` | `{start, end, source}`: where the preview sits **inside the original clip**, in seconds. `source` is `perch` (Perch found the moment), `fallback` (BirdNET-Go's own window) or `whole` (clip no longer than one Perch window) |
+| `segment` | `{start, end, source}`: where the preview sits **inside the original clip**, in seconds. `source` is `perch` (Perch found the moment), `fallback` (BirdNET-Go's own window: the species is unknown to Perch, or Perch is barely sure of it, best match under 0.10, so there is no real moment to find and nothing is cleaned) or `whole` (clip no longer than one Perch window) |
 | `method` | `trim` (the moment, made loud), `gate` (hiss reduction), `separate` (AI separation), `separate+gate` |
 | `cleaned` | `true` only when a clean-up passed the Perch re-check and was shipped |
 | `scores` | `{original, preview}`: how sure Perch is of the species on the untouched moment and on the shipped preview, both measured at the preview's loudness |

@@ -150,3 +150,20 @@ def test_every_candidate_id_maps_to_one_of_the_documented_methods():
         assert candidates.method_of(cid) == "separate"
     for cid in ("M4G", "M4SG", "M8G"):
         assert candidates.method_of(cid) == "separate+gate"
+
+
+def test_a_noise_level_perch_curve_is_not_a_match_and_nothing_is_cleaned():
+    # Perch's best window is 0.08: there is no real peak to find, and "not worse than the untouched moment minus 0.02" would
+    # pass for any clean-up, so the moment is BirdNET-Go's own window and the separators never run
+    scorer = FakeScorer(base=0.08)
+    prev = make_preview(clip(), species_idx=3, scorer=scorer, separators=[FakeSeparator(4), FakeSeparator(8)])
+    assert prev.segment.source == "fallback" and prev.segment.start == pytest.approx(2.5)
+    assert prev.variant == "B" and not prev.cleaned and prev.decision == []
+    assert any("barely sure" in n and "0.08" in n for n in prev.notes)
+    assert scorer.calls == [(1, True)]                                          # located, then nothing else was scored
+
+
+def test_a_curve_just_at_the_evidence_floor_still_counts_as_a_match():
+    scorer = FakeScorer(base=0.10)
+    prev = make_preview(clip(), species_idx=3, scorer=scorer, separators=[])
+    assert prev.segment.source == "perch"

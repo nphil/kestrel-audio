@@ -15,6 +15,7 @@ MARGIN = 0.5       # extra audio kept on both sides of the matched run
 RUN_FRACTION = 0.9
 NEAR_BEST = 0.005  # windows within this of the best count as "the best" (the middle one is taken)
 FALLBACK_BEGIN = 3.0   # BirdNET-Go keeps 3 s of pre-roll, so its own detection window starts 3 s into the clip
+MIN_EVIDENCE = 0.10    # below this best-window confidence Perch is guessing: no moment is "matched", and nothing can be verified
 
 
 @dataclass(frozen=True)
