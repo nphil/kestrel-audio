@@ -35,14 +35,14 @@ volume and at the loud preview volume), and the animal has to stand out at least
 **On the 27 real clips we evaluated** (17 species: owls, a coyote, peepers, a squirrel, many songbirds): for 20 of them nothing
 could be cleaned without losing some of the animal, so the untouched moment, made loud, was the answer; 7 got a clean-up that
 Perch confirmed (for example a Barred Owl whose background dropped by 26 dB while Perch stayed 98% sure). No clip ever got a
-preview that Perch liked less than the untouched moment.
+preview that Perch liked noticeably less than the untouched moment (the largest drop was 0.007 on a 0 to 1 scale).
 
 ## Where it runs
 
 An Unraid container (`ghcr.io/nphil/kestrel-audio`), next to the GPU apps. It is polite about the shared video card:
 
 * It uses the **GPU only while it has work**, and only if at least 2.5 GB of video memory is free; otherwise it works on
-  the CPU (slower, same result). Its own share is held under 1.5 GB and is about 0.7 GB between clips and about 1.1 GB at its peak (measured on a Tesla P40), then 0 once it unloads.
+  the CPU (slower, same result). Its own share is held under 1.5 GB and is about 0.7 GB between clips and at most about 1.2 GB at its peak (measured on a Tesla P40), then 0 once it unloads.
 * The models are loaded when the first clip arrives and **unloaded after two minutes without work**: the worker process
   exits, so the video memory goes back to zero.
 * One clip at a time, newest first. Previews are kept 30 days (same as BirdNET-Go), 2 GB at most.
