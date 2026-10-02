@@ -46,8 +46,7 @@ ENV KESTREL_AUDIO_VERSION=${VERSION} \
 LABEL org.opencontainers.image.title="Kestrel Audio" \
       org.opencontainers.image.description="Makes Kestrel bird and animal sound previews audible, and cleaner only when proven safe" \
       org.opencontainers.image.source="https://github.com/nphil/kestrel-audio" \
-      org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.version="${VERSION}"
+      org.opencontainers.image.licenses="MIT"
 
 VOLUME /data
 EXPOSE 8787
