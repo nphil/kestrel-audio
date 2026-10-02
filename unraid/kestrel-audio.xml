@@ -14,7 +14,7 @@
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/nphil/kestrel-audio/main/unraid/kestrel-audio.xml</TemplateURL>
   <Icon>http://192.168.1.69:8787/icon-512.png</Icon>
-  <ExtraParams>--runtime=nvidia --cpus=4 --cpuset-cpus=0-4,8-12 --memory=4g --memory-swap=4g</ExtraParams>
+  <ExtraParams>--runtime=nvidia --restart=unless-stopped --cpus=4 --cpuset-cpus=0-4,8-12 --memory=4g --memory-swap=4g</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
