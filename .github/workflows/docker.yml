@@ -35,6 +35,8 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements-dev.txt
+      - name: Install ffmpeg (the AAC tests need it)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
 
