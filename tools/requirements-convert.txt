@@ -1,0 +1,8 @@
+# Only the image's build stage uses these (to convert Google's MixIT checkpoints to ONNX); the running service never imports TensorFlow.
+# The exact stack that tools/convert_mixit.py was validated with (python:3.11-slim).
+tensorflow-cpu==2.12.1
+tf2onnx==1.16.1
+onnx==1.16.2
+onnxruntime==1.26.0
+numpy==1.24.3
+protobuf==3.20.3

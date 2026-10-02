@@ -1,0 +1,11 @@
+# Runtime dependencies of the service (pinned to what was tested).
+# onnxruntime-gpu 1.26.x is the LAST release built for CUDA 12. From 1.27 on it is built for CUDA 13, which no longer
+# supports Pascal cards such as the Tesla P40 (compute capability 6.1).
+numpy==2.4.6
+scipy==1.17.1
+pyloudnorm==0.2.0
+onnxruntime-gpu==1.26.0
+fastapi==0.142.2
+starlette==1.7.0
+uvicorn==0.54.0
+nvidia-ml-py==13.580.82

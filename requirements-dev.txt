@@ -1,0 +1,9 @@
+# Enough to run the test-suite (pure logic and the HTTP contract; no models, no GPU, no ONNX Runtime).
+numpy==2.4.6
+scipy==1.17.1
+pyloudnorm==0.2.0
+fastapi==0.142.2
+starlette==1.7.0
+uvicorn==0.54.0
+httpx2==2.13.1
+pytest==9.1.1

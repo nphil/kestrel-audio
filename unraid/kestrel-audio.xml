@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>kestrel-audio</Name>
+  <Repository>ghcr.io/nphil/kestrel-audio:latest</Repository>
+  <Registry>https://github.com/nphil/kestrel-audio/pkgs/container/kestrel-audio</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/nphil/kestrel-audio/issues</Support>
+  <Project>https://github.com/nphil/kestrel-audio</Project>
+  <Overview>Kestrel Audio makes the sound of a Kestrel bird or animal detection actually audible. BirdNET-Go's clips are recorded about 100 times too quietly; this service finds the moment Google's Perch AI matched to the animal, makes that moment loud (-16 LUFS) and returns it as a small AAC file. It also tries to cut the background noise, but only keeps that clean-up when a second Perch check proves the animal is still just as audible. Runs on the GPU only while it has work (and only when enough video memory is free), otherwise on the CPU; models are unloaded after two minutes of quiet. Needs the Nvidia Driver plugin. The status page and the API key are on the WebUI.</Overview>
+  <Category>Tools: Other:</Category>
+  <WebUI>http://[IP]:[PORT:8787]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/nphil/kestrel-audio/main/unraid/kestrel-audio.xml</TemplateURL>
+  <Icon>http://192.168.1.69:8787/icon-512.png</Icon>
+  <ExtraParams>--runtime=nvidia --cpus=4 --cpuset-cpus=0-4,8-12 --memory=4g --memory-swap=4g</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Nvidia Driver plugin (for the GPU; without it the service runs on the CPU).</Requires>
+  <Config Name="WebUI Port" Target="8787" Default="8787" Mode="tcp" Description="Status page and API (the API needs the key shown on the status page)." Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="App Data" Target="/data" Default="/mnt/nvme/appdata/kestrel-audio" Mode="rw" Description="Previews, job database and the API key file (named key)." Type="Path" Display="always" Required="true" Mask="false">/mnt/nvme/appdata/kestrel-audio</Config>
+  <Config Name="NVIDIA Visible Devices" Target="NVIDIA_VISIBLE_DEVICES" Default="all" Mode="" Description="GPU to use: 'all' or the GPU UUID from 'nvidia-smi -L'." Type="Variable" Display="always" Required="true" Mask="false">all</Config>
+  <Config Name="NVIDIA Driver Capabilities" Target="NVIDIA_DRIVER_CAPABILITIES" Default="compute,utility" Mode="" Description="Leave as is (compute for the models, utility for nvidia-smi / memory readings)." Type="Variable" Display="advanced" Required="true" Mask="false">compute,utility</Config>
+  <Config Name="Device" Target="KESTREL_AUDIO_DEVICE" Default="auto" Mode="" Description="auto = GPU when at least the free memory below is available, else CPU. cpu = never use the GPU. cuda = always try the GPU." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+  <Config Name="Free GPU memory needed (MiB)" Target="KESTREL_AUDIO_MIN_FREE_VRAM_MIB" Default="2500" Mode="" Description="The GPU is only used when at least this much memory is free; the service itself then stays under 1500 MiB." Type="Variable" Display="advanced" Required="false" Mask="false">2500</Config>
+  <Config Name="Unload after idle (s)" Target="KESTREL_AUDIO_IDLE_UNLOAD_S" Default="120" Mode="" Description="Seconds without work before the models (and their GPU memory) are released." Type="Variable" Display="advanced" Required="false" Mask="false">120</Config>
+  <Config Name="Keep previews (days)" Target="KESTREL_AUDIO_RETENTION_DAYS" Default="30" Mode="" Description="Previews older than this are deleted (BirdNET-Go keeps its clips for the same time)." Type="Variable" Display="advanced" Required="false" Mask="false">30</Config>
+  <Config Name="Storage cap (MB)" Target="KESTREL_AUDIO_CAP_MB" Default="2048" Mode="" Description="Oldest previews are deleted first once the total passes this." Type="Variable" Display="advanced" Required="false" Mask="false">2048</Config>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Used for 'processed today' on the status page." Type="Variable" Display="advanced" Required="false" Mask="false">America/New_York</Config>
+</Container>
