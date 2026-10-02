@@ -46,9 +46,9 @@ def http(method: str, path: str, *, key: str | None = None, body: bytes | None =
     req = urllib.request.Request(BASE + path, data=body, method=method, headers=h)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, dict(r.headers), r.read()
+            return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read()
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers), e.read()
+        return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read()
 
 
 def synthetic_clip(seconds: int = 15, sr: int = 48000) -> bytes:
@@ -119,7 +119,7 @@ def main() -> None:
     print("job ready:", {k: info[k] for k in ("segment", "method", "loudnessLufs", "durationS")})
 
     code, hdr, audio = http("GET", "/v1/previews/1", key=key)
-    assert code == 200 and hdr.get("Content-Type") == "audio/mp4" and len(audio) > 5000
+    assert code == 200 and hdr.get("content-type") == "audio/mp4" and len(audio) > 5000
     code, hdr, part = http("GET", "/v1/previews/1", key=key, headers={"Range": "bytes=0-99"})
     assert code == 206 and len(part) == 100, f"range: {code}"
     probe = sh("docker", "exec", NAME, "ffprobe", "-v", "error", "-show_entries", "stream=codec_name,sample_rate,channels",

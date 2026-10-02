@@ -35,6 +35,9 @@ class Config:
     device: str                 # auto | cpu | cuda
     min_free_vram_mib: int      # free GPU memory needed before a worker may use the GPU
     gpu_cap_mib: int            # the worker process must stay under this on the GPU
+    perch_arena_mib: int        # part of that cap for Perch's weights + activations (what is left goes to one AI separator at a time)
+    perch_batch_gpu: int        # Perch windows per GPU batch (bigger = faster, needs a bigger arena)
+    perch_batch_cpu: int
     cpu_threads: int
     cpu_nice: int
     idle_unload_s: int          # worker (and its GPU memory) goes away after this much idle time
@@ -77,6 +80,9 @@ def load() -> Config:
         device=_env("KESTREL_AUDIO_DEVICE", "auto").lower(),
         min_free_vram_mib=_int("KESTREL_AUDIO_MIN_FREE_VRAM_MIB", 2500),
         gpu_cap_mib=_int("KESTREL_AUDIO_GPU_CAP_MIB", 1500),
+        perch_arena_mib=_int("KESTREL_AUDIO_PERCH_ARENA_MIB", 900),
+        perch_batch_gpu=_int("KESTREL_AUDIO_PERCH_BATCH_GPU", 4),
+        perch_batch_cpu=_int("KESTREL_AUDIO_PERCH_BATCH_CPU", 8),
         cpu_threads=max(1, min(_int("KESTREL_AUDIO_CPU_THREADS", 4), 4)),
         cpu_nice=_int("KESTREL_AUDIO_CPU_NICE", 10),
         idle_unload_s=_int("KESTREL_AUDIO_IDLE_UNLOAD_S", 120),

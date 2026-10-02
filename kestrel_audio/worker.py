@@ -60,7 +60,8 @@ def main() -> int:
             info = engine.process(clip_path=msg["clip"], out_path=msg["out"], scientific=msg.get("scientific"), species=msg.get("species"))
             info["device"] = device
             vram = engine.vram_mib()
-            info["vramMiB"] = vram
+            info["vramMiB"] = vram                       # what the worker holds now (the resident weights)
+            info["vramPeakMiB"] = engine.last_peak_mib    # the highest it held while this job ran
             send({"event": "done", "id": det, "info": info, "vramMiB": vram})
         except (PreviewError, AudioError) as exc:
             send({"event": "failed", "id": det, "error": str(exc)})

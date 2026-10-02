@@ -3,7 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from kestrel_audio import config
-from kestrel_audio.server import create_app, is_lan, job_info, load_or_create_key
+from kestrel_audio.server import caller_is_lan, create_app, is_lan, job_info, load_or_create_key
 from kestrel_audio.store import Store
 
 KEY = "k" * 64
@@ -165,3 +165,16 @@ def test_key_is_created_once_with_private_permissions(tmp_path):
     k1 = load_or_create_key(p)
     assert len(k1) == 64 and load_or_create_key(p) == k1
     assert oct(p.stat().st_mode & 0o777) == "0o600"
+
+
+def test_behind_a_proxy_or_tunnel_the_original_caller_must_be_on_the_home_network_too():
+    assert caller_is_lan("192.168.1.9", {})                                                      # straight from the LAN
+    assert caller_is_lan("172.17.0.1", {"x-forwarded-for": "192.168.1.50"})                      # reverse proxy, LAN caller
+    assert not caller_is_lan("172.17.0.1", {"x-forwarded-for": "203.0.113.7"})                   # reverse proxy, internet caller
+    assert not caller_is_lan("172.17.0.1", {"x-forwarded-for": "192.168.1.50, 203.0.113.7"})     # any public hop refuses
+    assert not caller_is_lan("172.18.0.4", {"cf-connecting-ip": "198.51.100.2", "cf-ray": "abc"})  # Cloudflare tunnel
+    assert not caller_is_lan("172.18.0.4", {"cf-ray": "abc"})                                    # tunnel that hides the caller
+    assert not caller_is_lan("172.17.0.1", {"forwarded": 'for="203.0.113.9";proto=https'})
+    assert caller_is_lan("172.17.0.1", {"forwarded": "for=192.168.1.5;proto=http"})
+    assert not caller_is_lan("203.0.113.7", {})                                                  # a public peer is never trusted
+    assert caller_is_lan("::ffff:192.168.1.9", {}) and caller_is_lan("192.168.1.9:51000", {"x-forwarded-for": "[::1]:80"})

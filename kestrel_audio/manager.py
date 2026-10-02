@@ -45,6 +45,7 @@ class Manager:
         self._stderr_task: asyncio.Task | None = None
         self._running_id: int | None = None
         self.vram_mib: int | None = None
+        self.vram_peak_mib: int | None = None
         self.started = time.time()
         self.system_errors: deque[dict[str, Any]] = deque(maxlen=20)
         self._gpu_cache: tuple[float, gpu.GpuInfo] = (0.0, gpu.NO_GPU)
@@ -164,10 +165,15 @@ class Manager:
         if ev == "done":
             info = reply["info"]
             self.vram_mib = reply.get("vramMiB")
+            self.vram_peak_mib = info.get("vramPeakMiB")
             self.store.finish(job.detection_id, info, nbytes=int(info.get("bytes", 0)), cleaned=bool(info.get("cleaned")),
                               took_s=took, device=device)
+            log.info("job %d (%s) ready in %.1f s on %s: %s %s, Perch %s -> %s, vram %s MiB", job.detection_id, job.species, took, device,
+                     info.get("variant"), info.get("method"), (info.get("scores") or {}).get("original"),
+                     (info.get("scores") or {}).get("preview"), info.get("vramMiB"))
         elif ev == "failed":
             self.store.fail(job.detection_id, str(reply.get("error", "failed")), took_s=took)
+            log.info("job %d (%s) failed: %s", job.detection_id, job.species, reply.get("error"))
         else:
             gpu_fault = bool(reply.get("gpu"))
             if gpu_fault:
@@ -253,6 +259,7 @@ class Manager:
         log.info("stopping the %s worker: %s", self._device, why)
         self._device = None
         self.vram_mib = None
+        self.vram_peak_mib = None
         try:
             if proc.returncode is None and not kill and proc.stdin is not None:
                 try:
@@ -277,7 +284,8 @@ class Manager:
         if running and self._running_id is None:
             idle = int(time.monotonic() - self._last_activity)
         return {"running": running, "device": self._device if running else None, "idleS": idle,
-                "vramMiB": self.vram_mib if running and self._device == "cuda" else None}
+                "vramMiB": self.vram_mib if running and self._device == "cuda" else None,
+                "vramPeakMiB": self.vram_peak_mib if running and self._device == "cuda" else None}
 
     def stats(self) -> dict[str, Any]:
         counts = self.store.counts()

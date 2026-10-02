@@ -5,9 +5,10 @@ from __future__ import annotations
 import hmac
 import ipaddress
 import os
+import re
 import secrets
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -17,7 +18,10 @@ from .config import PACKAGE_DIR, Config
 from .manager import Manager
 from .store import FAILED, PENDING, READY, RUNNING, Job, Store, iso
 
-CGNAT = ipaddress.ip_network("100.64.0.0/10")   # Tailscale
+HOME_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",      # private IPv4 (RFC 1918)
+    "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10",     # loopback, link-local, Tailscale's CGNAT range
+    "::1/128", "fc00::/7", "fe80::/10"))                  # IPv6 loopback, unique-local, link-local
 
 
 def load_or_create_key(path: Path) -> str:
@@ -34,14 +38,48 @@ def load_or_create_key(path: Path) -> str:
     return key
 
 
-def is_lan(host: str | None) -> bool:
-    if not host:
-        return False
+def _parse_ip(text: str | None) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """'1.2.3.4', '1.2.3.4:5678', '[::1]:80', '::ffff:10.0.0.1' -> an address, or None."""
+    if not text:
+        return None
+    t = text.strip().strip('"')
+    if t.startswith("["):
+        t = t[1:].split("]")[0]
+    elif t.count(":") == 1:
+        t = t.split(":")[0]
     try:
-        ip = ipaddress.ip_address(host)
+        ip = ipaddress.ip_address(t)
     except ValueError:
+        return None
+    return ip.ipv4_mapped if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped else ip
+
+
+def is_lan(host: str | None) -> bool:
+    """Home network, loopback or tailnet (Tailscale's 100.64.0.0/10)."""
+    ip = _parse_ip(host)
+    return ip is not None and any(ip in net for net in HOME_NETWORKS if net.version == ip.version)
+
+
+_FOR_RE = re.compile(r'for="?\[?([^;,"\]]+)', re.I)
+
+
+def caller_is_lan(peer: str | None, headers: Mapping[str, str]) -> bool:
+    """May this caller see the API key? The TCP peer must be on the home network, and so must the ORIGINAL caller when the
+    request came through a reverse proxy or a tunnel (whose own address is always private). A request that announces a
+    forwarding hop we cannot read (Cloudflare's `cf-ray` without `cf-connecting-ip`) is refused."""
+    if not is_lan(peer):
         return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in CGNAT
+    hops: list[str] = []
+    for name in ("cf-connecting-ip", "true-client-ip", "x-real-ip"):
+        if headers.get(name):
+            hops.append(headers[name])
+    if headers.get("x-forwarded-for"):
+        hops += headers["x-forwarded-for"].split(",")
+    if headers.get("forwarded"):
+        hops += _FOR_RE.findall(headers["forwarded"])
+    if headers.get("cf-ray") and not headers.get("cf-connecting-ip"):
+        return False
+    return all(is_lan(h) for h in hops)
 
 
 def job_info(job: Job, store: Store) -> dict[str, Any]:
@@ -106,7 +144,7 @@ def create_app(cfg: Config, store: Store, manager: Manager, key: str) -> FastAPI
 
     @app.get("/api/key")
     async def show_key(request: Request) -> Response:
-        if not is_lan(request.client.host if request.client else None):
+        if not caller_is_lan(request.client.host if request.client else None, request.headers):
             return JSONResponse({"error": "lan_only"}, status_code=403)
         return JSONResponse({"key": key}, headers={"Cache-Control": "no-store"})
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 
 
@@ -60,21 +61,91 @@ def query() -> GpuInfo:
     return _query_nvml() or _query_smi() or NO_GPU
 
 
-def used_by_pid_mib(pid: int) -> int | None:
-    """GPU memory held by one process, or None when NVML cannot attribute it (container PID namespaces can hide it)."""
+def compute_processes() -> dict[int, int]:
+    """{pid: MiB} of every process using the first GPU, with the PIDs the driver reports (the host's, not the container's).
+    Empty when NVML and nvidia-smi are both unavailable."""
     try:
         import pynvml
         pynvml.nvmlInit()
         try:
             h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            for p in pynvml.nvmlDeviceGetComputeRunningProcesses(h):
-                if p.pid == pid and p.usedGpuMemory is not None:
-                    return int(p.usedGpuMemory // 2**20)
+            return {int(p.pid): int((p.usedGpuMemory or 0) // 2**20) for p in pynvml.nvmlDeviceGetComputeRunningProcesses(h)}
         finally:
             pynvml.nvmlShutdown()
     except Exception:
-        return None
-    return None
+        pass
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.check_output(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                                          timeout=5, text=True)
+            return {int(a): int(b) for a, b in (ln.split(",") for ln in out.strip().splitlines() if "," in ln)}
+        except Exception:
+            return {}
+    return {}
+
+
+class Footprint:
+    """What THIS process holds on the GPU. A container cannot see its own host PID, so the processes that already used the
+    GPU when this was created are remembered, and anything new that appears afterwards is counted as ours.
+    NVML stays initialised for the life of the object, which keeps a sample cheap enough to take ten times a second."""
+
+    def __init__(self) -> None:
+        self._nvml = None
+        self._handle = None
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            self._nvml = pynvml
+        except Exception:
+            self._nvml = None
+        self._before = set(self._table())
+
+    def _table(self) -> dict[int, int]:
+        if self._nvml is not None:
+            try:
+                procs = self._nvml.nvmlDeviceGetComputeRunningProcesses(self._handle)
+                return {int(p.pid): int((p.usedGpuMemory or 0) // 2**20) for p in procs}
+            except Exception:
+                pass
+        return compute_processes()
+
+    def mib(self) -> int | None:
+        table = self._table()
+        if not table and not self._before:
+            return None
+        return sum(m for pid, m in table.items() if pid not in self._before)
+
+
+class PeakSampler:
+    """Context manager: samples `footprint.mib()` in a background thread while a job runs and keeps the highest value."""
+
+    def __init__(self, footprint: "Footprint | None", interval: float = 0.1):
+        self._fp, self._interval = footprint, interval
+        self.peak: int | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            v = self._fp.mib() if self._fp is not None else None
+            if v is not None and (self.peak is None or v > self.peak):
+                self.peak = v
+            self._stop.wait(self._interval)
+
+    def __enter__(self) -> "PeakSampler":
+        if self._fp is not None:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            v = self._fp.mib() if self._fp is not None else None
+            if v is not None and (self.peak is None or v > self.peak):
+                self.peak = v
 
 
 def choose_device(info: GpuInfo, *, min_free_mib: int, breaker_open: bool = False, forced: str = "auto") -> tuple[str, str]:

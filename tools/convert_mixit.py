@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert Google's bird MixIT separation checkpoints (TensorFlow 1 graphs) to ONNX.
+r"""Convert Google's bird MixIT separation checkpoints (TensorFlow 1 graphs) to ONNX.
 
     python tools/convert_mixit.py --sources 4 --out mixit4.onnx --download
     python tools/convert_mixit.py --sources 8 --out mixit8.onnx --ckpt-dir /path/to/output_sources8
@@ -16,18 +16,24 @@ is dynamic (any length, tested 5 s to 15 s).
 
 Three things in the TF graph need care, and each is handled here:
 
-1. tf2onnx 1.16 turns the integer ops FloorMod/FloorDiv into Div-based formulas that truncate toward zero. The graph pads
-   its input to a multiple of the 11-sample frame hop with ``FloorMod(-n, 11)``, so the stock conversion silently runs with
-   a negative pad (crops 3 samples) and fails at run time with a broadcast error whenever the length is not a multiple of
-   11. Fixed with ONNX ``Mod(fmod=0)``, which has TF's floor semantics for integers.
+1. tf2onnx 1.16 turns the integer ops FloorMod/FloorDiv into Div-based formulas that truncate toward zero, which is wrong for
+   negative operands. The graph's framing code computes its padding with ``FloorMod(-n, 11)`` (11 = frame hop), so the stock
+   conversion silently pads by a negative amount: a 132300-sample input failed at run time with "broadcast 132297 by 132300"
+   (132297 = 12027 x 11 ran fine). Fixed with ONNX ``Mod(fmod=0)``, which has TF's floor semantics for integers.
 2. The 28 dilated depthwise convolutions are written as SpaceToBatchND -> DepthwiseConv2dNative(VALID) -> BatchToSpaceND with
    paddings computed from the dynamic length. They are fused into one DepthwiseConv2dNative with ``dilations=[1, d, 1, 1]``
    and zero padding ``d`` on both sides. That is exactly what the padded batch-to-space dance computes (the S2B pads are
    [d, d + extra] and the B2S crops drop ``extra``), and it removes about 2000 reshape/transpose/pad nodes.
 3. The result is checked against the original TF graph on synthetic audio of two different lengths before the file is kept.
 
-Validated stack (Docker python:3.11-slim, see PINNED_REQUIREMENTS): tensorflow-cpu 2.12.1, tf2onnx 1.16.1, onnx 1.16.2,
-onnxruntime 1.26.0, numpy 1.24.3, protobuf 3.20.3.
+Validated stack (Docker python:3.11-slim, 4 GiB RAM cap, 4 CPUs; about 3 minutes and 2.2 GB peak per model):
+
+    FROM python:3.11-slim AS mixit
+    RUN pip install --no-cache-dir tensorflow-cpu==2.12.1 tf2onnx==1.16.1 onnx==1.16.2 onnxruntime==1.26.0 \
+        numpy==1.24.3 protobuf==3.20.3
+    COPY tools/convert_mixit.py /convert_mixit.py
+    RUN python /convert_mixit.py --sources 4 --out /out/mixit4.onnx --download \
+     && python /convert_mixit.py --sources 8 --out /out/mixit8.onnx --download
 """
 from __future__ import annotations
 

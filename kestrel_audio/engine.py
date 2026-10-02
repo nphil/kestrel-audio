@@ -2,7 +2,6 @@
 and turns one stored clip into a stored preview."""
 from __future__ import annotations
 
-import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,10 +10,13 @@ from typing import Any
 from . import gpu
 from .codec import SR, AacCodec, decode_file
 from .config import Config
-from .mixit import MIXIT_FILES, OrtMixit
+from .mixit import MIXIT_FILES, LazySeparator
 from .perch import LABELS_FILE, OrtPerch
 from .pipeline import PreviewError, finalize, make_preview
 from .species import Labels
+
+CUDA_OVERHEAD_MIB = 160     # the CUDA context and cuDNN/cuBLAS handles sit outside onnxruntime's arena (measured 115-170 MiB)
+RESIDENT_WEIGHTS_MIB = 520  # what stays on the GPU between runs: Perch 413 + both separators 76 + slack
 
 
 class Engine:
@@ -22,45 +24,40 @@ class Engine:
         self.cfg, self.device = cfg, device
         self.labels = Labels.from_file(cfg.models_dir / LABELS_FILE)     # cheap: a text file
         self._perch: OrtPerch | None = None
-        self._separators: list[OrtMixit] | None = None
+        self._separators: list[LazySeparator] | None = None
         self.codec = AacCodec()
-        self.baseline_used_mib = (gpu.query().total_mib or 0) - (gpu.query().free_mib or 0) if device == "cuda" else 0
+        self.footprint = gpu.Footprint() if device == "cuda" else None    # remembers who used the GPU before we did
+        self.last_peak_mib: int | None = None
 
-    # GPU memory plan (MiB), all inside the worker's cap: Perch holds its weights plus activations, each MixIT model is
-    # loaded only if present. The numbers are tuned to the measured footprints (see README).
+    # GPU budget (cfg.gpu_cap_mib, default 1500 MiB for the whole process). Between runs only the weights stay resident
+    # (onnxruntime hands the working memory back after every run), and one model runs at a time, so the peak is
+    # about: CUDA overhead + resident weights + the biggest transient. Each separator's arena cap is what is left of the
+    # budget after the overhead and the resident weights; the work areas that are actually needed are smaller (a 9 s
+    # clip needs about 550 MiB with 8 tracks, 400 MiB with 4).
     @property
-    def _caps(self) -> dict[str, int]:
-        total = self.cfg.gpu_cap_mib
-        return {"perch": int(total * 0.52), "mixit4": int(total * 0.18), "mixit8": int(total * 0.30)}
+    def separator_arena_mib(self) -> int:
+        return max(256, self.cfg.gpu_cap_mib - CUDA_OVERHEAD_MIB - RESIDENT_WEIGHTS_MIB)
 
     @property
     def perch(self) -> OrtPerch:
         if self._perch is None:
-            self._perch = OrtPerch(self.cfg.models_dir, device=self.device, threads=self.cfg.cpu_threads, vram_mib=self._caps["perch"])
+            gpu_mode = self.device == "cuda"
+            self._perch = OrtPerch(self.cfg.models_dir, device=self.device, threads=self.cfg.cpu_threads, vram_mib=self.cfg.perch_arena_mib,
+                                   batch=self.cfg.perch_batch_gpu if gpu_mode else self.cfg.perch_batch_cpu)
         return self._perch
 
     @property
-    def separators(self) -> list[OrtMixit]:
+    def separators(self) -> list[LazySeparator]:
         if self._separators is None:
-            seps = []
-            for k, fname in MIXIT_FILES.items():
-                p = self.cfg.models_dir / fname
-                if p.exists():
-                    seps.append(OrtMixit(p, k, device=self.device, threads=self.cfg.cpu_threads, vram_mib=self._caps[f"mixit{k}"]))
-            self._separators = seps
+            self._separators = [
+                LazySeparator(self.cfg.models_dir / fname, k, device=self.device, threads=self.cfg.cpu_threads,
+                              vram_mib=self.separator_arena_mib)
+                for k, fname in MIXIT_FILES.items() if (self.cfg.models_dir / fname).exists()]
         return self._separators
 
     def vram_mib(self) -> int | None:
-        """GPU memory this process holds (None on CPU)."""
-        if self.device != "cuda":
-            return None
-        own = gpu.used_by_pid_mib(os.getpid())
-        if own is not None:
-            return own
-        info = gpu.query()
-        if info.total_mib is None or info.free_mib is None:
-            return None
-        return max(0, (info.total_mib - info.free_mib) - self.baseline_used_mib)
+        """GPU memory this process holds right now (None on the CPU path or when the driver cannot say)."""
+        return self.footprint.mib() if self.footprint is not None else None
 
     def process(self, *, clip_path: str, out_path: str, scientific: str | None, species: str | None) -> dict[str, Any]:
         t0 = time.perf_counter()
@@ -71,9 +68,11 @@ class Engine:
         cleanup = self.device == "cuda" or self.cfg.cpu_cleanup
         t_dec = time.perf_counter() - t0
         scorer = self.perch if idx is not None else None
-        prev = make_preview(x22, species_idx=idx, scorer=scorer,
-                            separators=self.separators if (cleanup and idx is not None) else [], cleanup=cleanup)
-        shipped, prev = finalize(prev, codec=self.codec, scorer=scorer, species_idx=idx)
+        with gpu.PeakSampler(self.footprint) as peak:
+            prev = make_preview(x22, species_idx=idx, scorer=scorer,
+                                separators=self.separators if (cleanup and idx is not None) else [], cleanup=cleanup)
+            shipped, prev = finalize(prev, codec=self.codec, scorer=scorer, species_idx=idx)
+        self.last_peak_mib = peak.peak
         out = Path(out_path)
         tmp = out.with_suffix(".part")
         tmp.write_bytes(shipped.data)
