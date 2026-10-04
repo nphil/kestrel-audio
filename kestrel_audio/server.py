@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -14,14 +15,18 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from . import __version__
-from .config import PACKAGE_DIR, Config
+from .config import DEFAULT_LOCAL_SPECIES, PACKAGE_DIR, Config
 from .manager import Manager
+from .perch import LABELS_FILE
+from .species import Labels, LocalList, LocalSpecies, local_list_json, parse_local_list
 from .store import FAILED, PENDING, READY, RUNNING, Job, Store, iso
 
 HOME_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",      # private IPv4 (RFC 1918)
     "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10",     # loopback, link-local, Tailscale's CGNAT range
     "::1/128", "fc00::/7", "fe80::/10"))                  # IPv6 loopback, unique-local, link-local
+
+LOCAL_SPECIES_MAX_BYTES = 1024 * 1024
 
 
 def load_or_create_key(path: Path) -> str:
@@ -89,10 +94,11 @@ def job_info(job: Job, store: Store) -> dict[str, Any]:
         "detectionId": job.detection_id, "state": state, "segment": None, "method": None, "cleaned": False, "scores": None,
         "loudnessLufs": None, "durationS": None, "createdAt": iso(job.created_at), "readyAt": None,
         "queuePosition": 0 if job.state == RUNNING else store.queue_position(job), "error": None,
+        "alternatives": None, "announced": None,
     }
     if job.state == READY and job.info:
         i = job.info
-        body.update({k: i.get(k) for k in ("segment", "method", "cleaned", "scores", "loudnessLufs", "durationS")})
+        body.update({k: i.get(k) for k in ("segment", "method", "cleaned", "scores", "loudnessLufs", "durationS", "alternatives", "announced")})
         body["cleaned"] = bool(i.get("cleaned"))
         body["readyAt"] = iso(job.finished_at)
         body["variant"] = i.get("variant")
@@ -105,7 +111,7 @@ def job_info(job: Job, store: Store) -> dict[str, Any]:
     return body
 
 
-def create_app(cfg: Config, store: Store, manager: Manager, key: str) -> FastAPI:
+def create_app(cfg: Config, store: Store, manager: Manager, key: str, labels: Labels | None = None) -> FastAPI:
     app = FastAPI(title="Kestrel Audio", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     static = PACKAGE_DIR / "static"
 
@@ -152,6 +158,55 @@ def create_app(cfg: Config, store: Store, manager: Manager, key: str) -> FastAPI
     @app.get("/v1/stats", dependencies=[Depends(auth)])
     async def stats() -> dict[str, Any]:
         return manager.stats()
+
+    # The species that can be real where the microphone is (BirdNET-Go's range-filter list, kept up to date by Home Assistant): what
+    # Perch's scores are measured against, so a 'could also be' list is made of birds that live here, not of 14,000 species.
+    def perch_labels() -> Labels | None:
+        nonlocal labels
+        if labels is None:
+            try:
+                labels = Labels.from_file(cfg.models_dir / LABELS_FILE)
+            except (OSError, ValueError):
+                return None
+        return labels
+
+    def local_state(local: LocalList, custom: bool) -> dict[str, Any]:
+        known = perch_labels()
+        return {"source": local.source, "updatedAt": local.updated_at, "count": len(local.entries), "custom": custom,
+                "matched": None if known is None else LocalSpecies.build(known, local).matched}
+
+    @app.get("/v1/local-species", dependencies=[Depends(auth)])
+    async def local_species() -> dict[str, Any]:
+        custom = cfg.local_species_path.exists()
+        local = parse_local_list(json.loads((cfg.local_species_path if custom else DEFAULT_LOCAL_SPECIES).read_text(encoding="utf-8")))
+        return local_state(local, custom)
+
+    @app.put("/v1/local-species", dependencies=[Depends(auth)])
+    async def put_local_species(request: Request) -> dict[str, Any]:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > LOCAL_SPECIES_MAX_BYTES:
+                raise HTTPException(413, "the species list is larger than 1 MiB")
+        try:
+            local = parse_local_list(json.loads(bytes(body)))
+        except (ValueError, RecursionError) as exc:     # includes a body that is not JSON
+            raise HTTPException(400, f"not a species list: {exc}")
+        text = json.dumps(local_list_json(local), ensure_ascii=False)
+        path = cfg.local_species_path
+        changed = not path.exists() or path.read_text(encoding="utf-8") != text
+        if changed:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)                           # the worker reads the file between jobs: never half a list
+        return {**local_state(local, True), "changed": changed}
+
+    @app.delete("/v1/local-species", dependencies=[Depends(auth)])
+    async def delete_local_species() -> dict[str, bool]:
+        existed = cfg.local_species_path.exists()
+        cfg.local_species_path.unlink(missing_ok=True)
+        return {"deleted": existed}
 
     @app.post("/v1/jobs", dependencies=[Depends(auth)])
     async def submit(request: Request, detection_id: int | None = None, species: str | None = None, scientific: str | None = None,

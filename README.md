@@ -21,9 +21,14 @@ nothing. Kestrel Audio fixes that in three steps:
    that are not the animal. Each attempt is then **re-checked by Perch**. If Perch is even slightly less sure of the animal
    than it was on the untouched moment, the attempt is thrown away. If nothing passes (the usual case), you simply get the
    untouched moment, made loud.
+4. **It says what else it could be.** The same listen to the 15 second clip scores every species that lives where the microphone
+   is (the list BirdNET-Go's own location filter allows, kept up to date by Home Assistant) next to wind, rain and traffic, so
+   noise is not mistaken for the nearest bird. Up to three species that Perch hears more strongly than the one BirdNET-Go
+   named come back as **"could also be"**, with how sure it is and where in the clip it is loudest.
 
 What you notice: the preview sits right on the animal, it is loud enough to hear, and a "Cleaned" mark appears only when a
-clean-up passed the check.
+clean-up passed the check. When Perch disagrees with BirdNET-Go, Kestrel offers the other species next to a button that plays
+what each one sounds like.
 
 ### Why not just clean everything?
 
@@ -64,7 +69,8 @@ An Unraid container (`ghcr.io/nphil/kestrel-audio`), next to the GPU apps. It is
   `GET /v1/previews/<id>` (audio/mp4, Range, ETag).
 * Layout: `kestrel_audio/` (`locate.py` finds the moment, `verify.py` is the safety gate, `loudness.py` is the loudness,
   limiter and AAC trim, `pipeline.py` ties them together, `manager.py` / `worker.py` run the models in a separate process,
-  `server.py` is the API). `tests/` holds the pure-logic and HTTP tests (`pip install -r requirements-dev.txt; pytest`).
+  `server.py` is the API, `species.py` is the local species list, `scoring.py` turns Perch's answer into scores and alternatives).
+  `tests/` holds the pure-logic and HTTP tests (`pip install -r requirements-dev.txt; pytest`).
 * Models: Perch v2 (ONNX, FP32) and Google's bird MixIT separators (4 and 8 tracks). The MixIT checkpoints are TensorFlow 1
   graphs; `tools/convert_mixit.py` converts them to ONNX during the image build (TensorFlow is only in that build stage).
   Everything runs in FP32 (the P40's FP16 is 1/64 speed) through ONNX Runtime 1.26, the last release built for CUDA 12 (newer
@@ -82,6 +88,9 @@ An Unraid container (`ghcr.io/nphil/kestrel-audio`), next to the GPU apps. It is
 * A clip whose species Perch does not know (or that arrives without a scientific name) gets BirdNET-Go's own detection window,
   made loud and never cleaned. The same goes for a clip where Perch is barely sure of the animal (its best match is under 10%):
   there is no real moment to find, and a clean-up could not be checked against such a low score.
+* "Could also be" is a second opinion from one model, not a verdict. On the 483 lab clips it offered the true species for 29% of the
+  calls BirdNET 2.4 got wrong, but for only 6.5% of those BirdNET 3.0 got wrong (3.0 is the better listener there); faint calls
+  (-10 dB) are mostly out of reach for both. Clips finished before this existed carry no alternatives.
 
 ## Licence
 

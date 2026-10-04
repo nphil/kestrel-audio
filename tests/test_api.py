@@ -1,9 +1,12 @@
-"""HTTP contract: auth, job submission, preview and info states, Range, delete, the LAN-only key."""
+"""HTTP contract: auth, job submission, preview and info states, Range, delete, the LAN-only key, the local species list."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from kestrel_audio import config
 from kestrel_audio.server import caller_is_lan, create_app, is_lan, job_info, load_or_create_key
+from kestrel_audio.species import Labels
 from kestrel_audio.store import Store
 
 KEY = "k" * 64
@@ -178,3 +181,77 @@ def test_behind_a_proxy_or_tunnel_the_original_caller_must_be_on_the_home_networ
     assert caller_is_lan("172.17.0.1", {"forwarded": "for=192.168.1.5;proto=http"})
     assert not caller_is_lan("203.0.113.7", {})                                                  # a public peer is never trusted
     assert caller_is_lan("::ffff:192.168.1.9", {}) and caller_is_lan("192.168.1.9:51000", {"x-forwarded-for": "[::1]:80"})
+
+
+ALTERNATIVES = [{"species": "Barred Owl", "scientific": "Strix varia", "score": 0.42, "raw": 0.2, "windowsHigh": 3, "window": {"start": 1.0, "end": 6.0}}]
+ANNOUNCED = {"species": "Blue Jay", "scientific": "Cyanocitta cristata", "score": 0.1, "raw": 0.05, "windowsHigh": 1, "window": {"start": 2.0, "end": 7.0}, "rank": 4}
+
+
+def finish_with_alternatives(store, det):
+    store.claim_next()
+    store.preview_path(det).write_bytes(b"m4a")
+    store.finish(det, {"segment": {"start": 3.0, "end": 9.0, "source": "perch"}, "method": "trim", "cleaned": False, "scores": {"original": 0.5, "preview": 0.5},
+                       "loudnessLufs": -16.0, "durationS": 6.0, "variant": "B", "device": "cpu", "notes": [], "alternatives": ALTERNATIVES,
+                       "announced": ANNOUNCED, "localSpecies": {"count": 3}}, nbytes=3, cleaned=False, took_s=1.0, device="cpu")
+
+
+def test_info_carries_the_alternatives_and_the_announced_species_and_stays_compatible_for_older_jobs(env):
+    client, store, _ = env
+    post(client, 10)
+    pending = client.get("/v1/previews/10/info", headers=H).json()
+    assert pending["alternatives"] is None and pending["announced"] is None            # present, and null while unknown
+    finish_with_alternatives(store, 10)
+    ready = client.get("/v1/previews/10/info", headers=H).json()
+    assert ready["alternatives"] == ALTERNATIVES and ready["announced"] == ANNOUNCED
+    assert "localSpecies" not in ready                                                 # stored with the job, not part of the contract
+    post(client, 11)
+    finish(store, 11)                                                                  # a job finished before alternatives existed
+    older = client.get("/v1/previews/11/info", headers=H).json()
+    assert older["state"] == "ready" and older["alternatives"] is None and older["announced"] is None and older["scores"] == {"original": 0.5, "preview": 0.6}
+
+
+def test_local_species_needs_the_key_and_starts_with_the_built_in_list(env):
+    client, _, _ = env
+    assert client.get("/v1/local-species").status_code == 401
+    assert client.put("/v1/local-species", content=b"[]").status_code == 401
+    assert client.delete("/v1/local-species").status_code == 401
+    state = client.get("/v1/local-species", headers=H).json()
+    assert state["custom"] is False and state["count"] > 300 and state["source"].startswith("Atlanta") and state["matched"] is None   # no Perch labels in the test
+
+
+def test_a_species_list_can_be_sent_replaced_and_dropped(env, tmp_path):
+    client, _, _ = env
+    body = {"source": "BirdNET-Go range filter", "updatedAt": "2026-10-03T21:30:39-04:00",
+            "species": [{"scientificName": "Strix varia", "commonName": "Barred Owl"}, {"scientific": "Cyanocitta cristata", "common": "Blue Jay"}]}
+    sent = client.put("/v1/local-species", json=body, headers=H)
+    assert sent.status_code == 200 and sent.json() == {"source": "BirdNET-Go range filter", "updatedAt": "2026-10-03T21:30:39-04:00", "count": 2,
+                                                       "custom": True, "matched": None, "changed": True}
+    assert json.loads((tmp_path / "local-species.json").read_text())["species"][0] == {"scientific": "Strix varia", "common": "Barred Owl"}
+    assert client.put("/v1/local-species", json=body, headers=H).json()["changed"] is False       # the same list again writes nothing
+    assert client.get("/v1/local-species", headers=H).json()["count"] == 2
+    assert client.delete("/v1/local-species", headers=H).json() == {"deleted": True}
+    assert client.delete("/v1/local-species", headers=H).json() == {"deleted": False}
+    assert client.get("/v1/local-species", headers=H).json()["custom"] is False
+
+
+@pytest.mark.parametrize("content", [b"", b"not json", b"{}", b'{"species": []}', b'[{"common": "Barred Owl"}]', b"[" * 200_000])
+def test_a_species_list_that_is_not_one_is_refused_and_changes_nothing(env, tmp_path, content):
+    client, _, _ = env
+    r = client.put("/v1/local-species", content=content, headers=H)
+    assert r.status_code == 400 and "species list" in r.json()["error"]
+    assert not (tmp_path / "local-species.json").exists()
+
+
+def test_an_oversized_species_list_is_refused(env):
+    client, _, _ = env
+    assert client.put("/v1/local-species", content=b" " * (1024 * 1024 + 1), headers=H).status_code == 413
+
+
+def test_the_status_says_how_many_of_the_listed_species_perch_knows(tmp_path, monkeypatch):
+    monkeypatch.setenv("KESTREL_AUDIO_DATA", str(tmp_path))
+    cfg = config.load()
+    store = Store(cfg.data_dir, cfg.inbox_dir, cfg.previews_dir, cfg.db_path)
+    client = TestClient(create_app(cfg, store, FakeManager(), KEY, labels=Labels(["Strix varia", "Cyanocitta cristata", "Wind"])))
+    body = {"species": [{"scientific": "Strix varia"}, {"scientific": "Cyanocitta cristata"}, {"scientific": "Turdus nowhereus"}, {"scientific": "Wind"}]}
+    assert client.put("/v1/local-species", json=body, headers=H).json()["matched"] == 2          # an unknown name and a sound-event class do not count
+    store.close()

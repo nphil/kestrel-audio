@@ -8,7 +8,7 @@ from kestrel_audio import candidates, loudness
 from kestrel_audio.codec import SR, AacCodec
 from kestrel_audio.locate import window_starts
 from kestrel_audio.pipeline import PreviewError, finalize, make_preview
-from kestrel_audio.scoring import WindowScores
+from kestrel_audio.scoring import Survey, WindowScores
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is needed for the AAC step")
 
@@ -167,3 +167,31 @@ def test_a_curve_just_at_the_evidence_floor_still_counts_as_a_match():
     scorer = FakeScorer(base=0.10)
     prev = make_preview(clip(), species_idx=3, scorer=scorer, separators=[])
     assert prev.segment.source == "perch"
+
+
+def test_one_survey_of_the_whole_clip_replaces_the_locating_pass_and_comes_back_on_the_preview():
+    c = clip()
+    starts = np.array(window_starts(len(c) / SR, full_only=True))
+    logits = np.zeros((len(starts), 6), dtype=np.float32)
+    logits[(starts >= 2.5) & (starts <= 6.0), 3] = 6.0              # class 3 stands out in the windows that cover 6-7.5 s
+    survey, asked = Survey(starts, logits), []
+    scorer = FakeScorer(base=0.8)
+    prev = make_preview(c, species_idx=3, scorer=scorer, separators=[], cleanup=False,
+                        surveyor=lambda x: asked.append(len(x)) or survey)
+    assert asked == [len(c)] and prev.survey is survey
+    assert prev.segment.source == "perch" and prev.segment.start < 6.0 and prev.segment.end > 7.5      # located from the survey's curve
+    assert scorer.calls == [(1, False)]                                                                 # only the re-score of the moment: no second pass over the clip
+
+
+def test_without_a_surveyor_nothing_is_surveyed_and_the_locating_pass_is_the_scorers_own():
+    scorer = FakeScorer(conf=locate_peak)
+    prev = make_preview(clip(), species_idx=3, scorer=scorer, separators=[], cleanup=False)
+    assert prev.survey is None and scorer.calls[0] == (1, True)
+
+
+def test_a_clip_with_no_known_species_or_no_window_to_search_can_still_be_surveyed():
+    sentinel = Survey(np.array([0.0]), np.zeros((1, 3), dtype=np.float32))
+    unknown = make_preview(clip(), species_idx=None, scorer=None, separators=[], surveyor=lambda x: sentinel)
+    short = make_preview(clip(seconds=4.0), species_idx=3, scorer=FakeScorer(), separators=[], surveyor=lambda x: sentinel)
+    assert unknown.survey is sentinel and unknown.segment.source == "fallback"
+    assert short.survey is sentinel and short.segment.source == "whole"

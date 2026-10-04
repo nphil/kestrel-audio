@@ -9,6 +9,7 @@ __all__ = ["Config", "load"]
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_DIR = PACKAGE_DIR.parent
+DEFAULT_LOCAL_SPECIES = PACKAGE_DIR / "defaults" / "local-species.json"     # what "local" means until Home Assistant sends the real list
 
 
 def _env(name: str, default: str) -> str:
@@ -50,6 +51,8 @@ class Config:
     # limits
     max_body_bytes: int
     max_clip_s: float
+    # what /info says besides the preview
+    alternatives: int           # "could also be" species reported per clip (0 = none, and no Perch pass for a species Perch does not know)
 
     @property
     def inbox_dir(self) -> Path:
@@ -66,6 +69,11 @@ class Config:
     @property
     def key_path(self) -> Path:
         return self.data_dir / "key"
+
+    @property
+    def local_species_path(self) -> Path:
+        """The species list Home Assistant keeps up to date (`PUT /v1/local-species`); the built-in one is used until it exists."""
+        return self.data_dir / "local-species.json"
 
 
 def load() -> Config:
@@ -93,4 +101,5 @@ def load() -> Config:
         cap_bytes=_int("KESTREL_AUDIO_CAP_MB", 2048) * 1024 * 1024,
         max_body_bytes=_int("KESTREL_AUDIO_MAX_BODY_MB", 20) * 1024 * 1024,
         max_clip_s=float(_env("KESTREL_AUDIO_MAX_CLIP_S", "60")),
+        alternatives=max(0, min(_int("KESTREL_AUDIO_ALTERNATIVES", 3), 10)),
     )

@@ -118,6 +118,20 @@ def main() -> None:
     assert -17.5 < info["loudnessLufs"] < -14.5, f"loudness {info['loudnessLufs']}"
     print("job ready:", {k: info[k] for k in ("segment", "method", "loudnessLufs", "durationS")})
 
+    # what Perch makes of the clip: always present, and a list (possibly empty) because the built-in species list is in the image
+    assert isinstance(info["alternatives"], list) and len(info["alternatives"]) <= 3, info.get("alternatives")
+    for alt in info["alternatives"]:
+        assert {"species", "scientific", "score", "raw", "windowsHigh", "window"} <= set(alt) and 0.15 <= alt["score"] <= 1, alt
+    assert info["announced"] and info["announced"]["scientific"] == "Cyanocitta cristata" and info["announced"]["rank"] >= 1, info["announced"]
+    code, _, body = http("GET", "/v1/local-species", key=key)
+    state = json.loads(body)
+    assert code == 200 and state["custom"] is False and state["count"] > 300 and state["matched"] > 300, state
+    code, _, body = http("PUT", "/v1/local-species", key=key, headers={"Content-Type": "application/json"},
+                         body=json.dumps({"species": [{"scientific": "Cyanocitta cristata", "common": "Blue Jay"}]}).encode())
+    assert code == 200 and json.loads(body)["matched"] == 1 and json.loads(body)["custom"] is True, f"species list: {code} {body[:200]}"
+    assert json.loads(http("DELETE", "/v1/local-species", key=key)[2]) == {"deleted": True}
+    print("alternatives and species list ok:", [a["species"] for a in info["alternatives"]], info["announced"]["rank"])
+
     code, hdr, audio = http("GET", "/v1/previews/1", key=key)
     assert code == 200 and hdr.get("content-type") == "audio/mp4" and len(audio) > 5000
     code, hdr, part = http("GET", "/v1/previews/1", key=key, headers={"Range": "bytes=0-99"})

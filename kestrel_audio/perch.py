@@ -6,7 +6,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .scoring import WindowScores, make_windows, to_scores
+from .scoring import Survey, WindowScores, make_windows, to_scores
 from .species import Labels
 
 MODEL_FILE = "perch_v2_no_dft_fp32.onnx"     # FP32 only: the P40's FP16 rate is 1/64
@@ -83,3 +83,8 @@ class OrtPerch:
             res.append(to_scores(starts, logits[at:at + len(w)], species_idx))
             at += len(w)
         return res
+
+    def survey(self, x22: np.ndarray) -> Survey:
+        """One batched pass over every full window of a clip, with the whole answer kept (see `scoring.Survey`)."""
+        starts, windows = make_windows(x22, full_only=True)
+        return Survey(np.asarray(starts, dtype=np.float64), self.logits(windows))

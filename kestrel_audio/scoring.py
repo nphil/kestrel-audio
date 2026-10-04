@@ -7,11 +7,13 @@ from typing import Protocol, Sequence
 import numpy as np
 
 from .codec import PERCH_SR, SR, to_perch_rate
-from .locate import HOP, WIN, window_starts
+from .locate import HOP, NEAR_BEST, RUN_FRACTION, WIN, window_starts
+from .species import LocalSpecies
 
 MIN_CONF = 0.0002                      # confidences below this count as zero (the evaluation's tool never reported them)
 WINDOW_SAMPLES = int(WIN * PERCH_SR)   # 160000
 HOP_SAMPLES = int(HOP * PERCH_SR)      # 16000
+ALT_MIN_SCORE = 0.15                  # a species needs this local score at its best window to be offered as "could also be"
 
 
 @dataclass(frozen=True)
@@ -61,3 +63,67 @@ def to_scores(starts: Sequence[float], logits: np.ndarray, species_idx: int) -> 
     conf = np.where(conf >= MIN_CONF, conf, 0.0)
     anyc = np.where(anyc >= MIN_CONF, anyc, 0.0)
     return WindowScores(np.asarray(starts, dtype=np.float64), conf, anyc)
+
+
+@dataclass(frozen=True)
+class Survey:
+    """Perch's answer for every full window of one clip, kept whole so one model pass serves both the search for the matched
+    moment and the 'could also be' list."""
+    starts: np.ndarray      # [n] window start times (s)
+    logits: np.ndarray      # [n, classes]
+
+    def window_scores(self, species_idx: int) -> WindowScores:
+        return to_scores(self.starts, self.logits, species_idx)
+
+
+# ------------------------------------------------------------------------------------------------ "could also be"
+
+@dataclass(frozen=True)
+class Hit:
+    """How strongly Perch hears one species somewhere in a clip."""
+    index: int              # Perch class index
+    score: float            # best local score over the windows, 0..1 (see `local_probabilities`)
+    raw: float              # Perch's plain confidence in that same window, over all 14,795 classes
+    windows_high: int       # consecutive windows within 90% of the best, counted as locate.pick_segment counts them (persistence)
+    start: float            # where the best window begins (s into the clip); it lasts WIN seconds
+    rank: int = 0           # 1 = the local species Perch hears most strongly
+
+
+def local_probabilities(logits: np.ndarray, members: np.ndarray) -> np.ndarray:
+    """[windows, classes] logits -> [windows, len(members)] softmax over those classes only: Perch's belief if the sound can only be
+    one of them. Sound-event classes (wind, rain, traffic, speech) belong to `members`, so a window of noise ends up with noise and
+    not with the nearest bird."""
+    return softmax(np.asarray(logits)[:, members])
+
+
+def rank_species(survey: Survey, local: LocalSpecies) -> list[Hit]:
+    """Every local species with its best window, strongest first."""
+    n = len(survey.starts)
+    if not n or not len(local.species):
+        return []
+    q = local_probabilities(survey.logits, local.members)[:, np.searchsorted(local.members, local.species)]
+    raw = softmax(survey.logits)
+    best = q.max(axis=0)
+    hits: list[Hit] = []
+    for j in np.argsort(-best, kind="stable"):
+        col, top = q[:, j], float(best[j])
+        near = np.flatnonzero(col >= top - NEAR_BEST)
+        at = int(near[len(near) // 2])                  # the middle one when several windows tie, as pick_segment does
+        lo = hi = at
+        while lo > 0 and col[lo - 1] >= RUN_FRACTION * top:
+            lo -= 1
+        while hi < n - 1 and col[hi + 1] >= RUN_FRACTION * top:
+            hi += 1
+        idx = int(local.species[j])
+        hits.append(Hit(idx, top, float(raw[at, idx]), hi - lo + 1, float(survey.starts[at]), len(hits) + 1))
+    return hits
+
+
+def pick_alternatives(hits: Sequence[Hit], announced: int | None, k: int, *, min_score: float = ALT_MIN_SCORE) -> tuple[list[Hit], Hit | None]:
+    """The "could also be" species: at most `k` that Perch hears at least `min_score` AND more strongly than the species BirdNET-Go
+    named. A species Perch rates as high as anything else in the clip needs no alternatives. Measured on the 483 lab clips (BirdNET 2.4's
+    calls): without that rule a list sat under 73% of the right calls, with it under 13%, and the true species was still offered for
+    29% of the wrong calls (34% without it). Also returns Perch's own hit for the named species (None if it has none)."""
+    named = next((h for h in hits if h.index == announced), None) if announced is not None else None
+    above = named.score if named is not None else 0.0
+    return [h for h in hits if h.index != announced and h.score >= min_score and h.score > above][:max(0, k)], named

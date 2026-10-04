@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, replace
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 import numpy as np
 
@@ -14,7 +14,7 @@ from .candidates import METHOD_TRIM, gate_variants, method_of, separated_variant
 from .codec import OUT_SR, SR, AacCodec, to_output_rate
 from .locate import MIN_EVIDENCE, WIN, Segment, fallback_segment, pick_segment, whole_clip_segment
 from .loudness import NormInfo, fade, loudness_clean, lufs, normalize, prescale, trim_to_true_peak
-from .scoring import Scorer
+from .scoring import Scorer, Survey
 from .verify import Candidate, Reference, Decision, TOLERANCE, choose, select_sources
 
 FADE_MS = 75.0
@@ -48,6 +48,7 @@ class Preview:
     notes: list[str] = field(default_factory=list)
     decision: list[dict] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
+    survey: Survey | None = None      # Perch's answer for the whole clip, when the caller asked for one (see `surveyor`)
 
     @property
     def method(self) -> str:
@@ -73,8 +74,10 @@ def _trace(dec: Decision, ref: Reference, picked: str | None) -> list[dict]:
 
 
 def make_preview(x22: np.ndarray, *, species_idx: int | None, scorer: Scorer | None, separators: Sequence[Separator],
-                 cleanup: bool = True) -> Preview:
-    """x22: the whole clip, mono float32 at 22.05 kHz."""
+                 cleanup: bool = True, surveyor: Callable[[np.ndarray], Survey] | None = None) -> Preview:
+    """x22: the whole clip, mono float32 at 22.05 kHz. `surveyor` runs Perch once over the whole clip and keeps every window's
+    full answer; the search for the matched moment then reads its curve from that pass instead of making another, and the survey
+    comes back on the Preview for whoever wants more than that one species' curve."""
     t_all = time.perf_counter()
     tm: dict[str, float] = {}
     notes: list[str] = []
@@ -87,10 +90,11 @@ def make_preview(x22: np.ndarray, *, species_idx: int | None, scorer: Scorer | N
 
     # ---- 1. locate the matched moment
     t = time.perf_counter()
+    survey = surveyor(x22) if surveyor is not None else None
     if dur <= WIN:
         seg = whole_clip_segment(dur)
     elif species_idx is not None and scorer is not None:
-        ws = scorer.score([x22], species_idx, full_only=True)[0]
+        ws = survey.window_scores(species_idx) if survey is not None else scorer.score([x22], species_idx, full_only=True)[0]
         seg = pick_segment(ws.starts, ws.conf, dur)
         if seg is None:
             seg = fallback_segment(dur)
@@ -115,13 +119,13 @@ def make_preview(x22: np.ndarray, *, species_idx: int | None, scorer: Scorer | N
     can_check = seg.source == "perch" and species_idx is not None and scorer is not None
     if not can_check:
         tm["totalS"] = time.perf_counter() - t_all
-        return Preview(b_final, b_final, "B", seg, b_norm, None, None, notes=notes, timings=tm)
+        return Preview(b_final, b_final, "B", seg, b_norm, None, None, notes=notes, timings=tm, survey=survey)
     if not cleanup:
         t = time.perf_counter()
         loud = scorer.score([b_final], species_idx)[0].best()
         tm["verifyS"] = time.perf_counter() - t
         tm["totalS"] = time.perf_counter() - t_all
-        return Preview(b_final, b_final, "B", seg, b_norm, loud, loud, notes=notes, timings=tm)
+        return Preview(b_final, b_final, "B", seg, b_norm, loud, loud, notes=notes, timings=tm, survey=survey)
 
     # ---- 3. AI separation (the GPU/CPU heavy part) and one batched Perch pass over the reference and every track
     t = time.perf_counter()
@@ -177,10 +181,10 @@ def make_preview(x22: np.ndarray, *, species_idx: int | None, scorer: Scorer | N
     tm["totalS"] = time.perf_counter() - t_all
     if dec.choice is None:
         return Preview(b_final, b_final, "B", seg, b_norm, ref_loud, ref_loud, native_original=ref_native, native_preview=ref_native,
-                       notes=notes, decision=_trace(dec, ref, None), timings=tm)
+                       notes=notes, decision=_trace(dec, ref, None), timings=tm, survey=survey)
     c = dec.choice.candidate
     return Preview(loud_audio[c.id], b_final, c.id, seg, b_norm, ref_loud, c.loud_score, native_original=ref_native,
-                   native_preview=c.native_score, notes=notes, decision=_trace(dec, ref, c.id), timings=tm)
+                   native_preview=c.native_score, notes=notes, decision=_trace(dec, ref, c.id), timings=tm, survey=survey)
 
 
 # ------------------------------------------------------------------------------------------------ shipping
