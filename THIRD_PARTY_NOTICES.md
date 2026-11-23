@@ -20,6 +20,11 @@ changes the file format, not the trained weights. Please cite S. Wisdom et al., 
 Invariant Training", NeurIPS 2020 (https://arxiv.org/abs/2006.12701), and T. Denton, S. Wisdom, J. R. Hershey, "Improving Bird
 Classification with Unsupervised Sound Separation", ICASSP 2022 (https://arxiv.org/abs/2110.03209).
 
+**Silero VAD v6.2** (voice activity detector, ONNX, 2 MB): Copyright Silero Team, MIT License
+(https://github.com/snakers4/silero-vad/blob/master/LICENSE). Source: https://github.com/snakers4/silero-vad at commit
+`5cd7945676eb32225748052e2e6a0580e4686a08` (`src/silero_vad/data/silero_vad.onnx`, sha256 checked during the image build).
+Used unmodified to tell when a human voice is speaking.
+
 ## Runtime
 
 * **ONNX Runtime** (`onnxruntime-gpu` 1.26.0), MIT, Microsoft.

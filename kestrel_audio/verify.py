@@ -1,10 +1,11 @@
 """The verification gate: when is a clean-up allowed to replace the untouched moment? Pure logic, no models.
 
 A clean-up candidate is offered to the listener only if ALL of these hold:
-  * it makes the animal stand out at least 3 dB more (clarity) and cuts the background at least 3 dB,
-  * its loudness normalisation was clean (no limiter crushing, on target),
-  * Perch is at least as sure of the species as on the untouched moment, minus 0.02, measured twice:
-    at the original volume ("native") and at the loud preview volume.
+  * it makes the animal stand out at least 3 dB more (clarity) and cuts the background at least 3 dB
+    (a candidate that only turns a human voice down is exempt: it is not meant to do either),
+  * it could be made loud (it is not silence) and it has no click the untouched moment does not have,
+  * Perch is at least as sure of the species as on the untouched moment, measured twice: at the original volume
+    ("native") and at the loud preview volume. There is no tolerance: a clean-up that costs Perch anything is not kept.
 Among candidates that pass, the one with the highest clarity wins. If none pass, the untouched moment is sent.
 """
 from __future__ import annotations
@@ -12,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
 
-TOLERANCE = 0.02            # Perch confidence may be this much below the untouched moment's
 MIN_CLARITY_GAIN_DB = 3.0
 MIN_SUPPRESSION_DB = 3.0
 CHUNK = 4                   # candidates scored per round (a round is one batched Perch call)
@@ -25,7 +25,7 @@ SOURCE_TAU_MIN = 0.02       # ... and at least this much in absolute terms
 class Reference:
     """The untouched matched moment (candidate B)."""
     native_score: float     # Perch(species) on the raw segment at its original volume
-    loud_score: float       # Perch(species) on the segment made loud (-16 LUFS)
+    loud_score: float       # Perch(species) on the segment made loud
     contrast_db: float      # clarity of the loud segment
 
 
@@ -34,7 +34,9 @@ class Candidate:
     id: str
     contrast_db: float
     suppression_db: float   # how much quieter the background got, measured at the original volume
-    norm_clean: bool        # loudness normalisation landed on target without crushing the audio
+    norm_clean: bool        # it could be metered and made loud (a candidate that came out silent cannot)
+    clicks: int = 0         # clicks it has that the untouched moment does not
+    exempt: bool = False    # not required to gain clarity (it only turns a human voice down)
     native_score: float | None = None
     loud_score: float | None = None
     reason: str = ""        # why it was not picked (filled in by `choose`)
@@ -59,6 +61,10 @@ def eligible(c: Candidate, ref: Reference, *, min_gain: float = MIN_CLARITY_GAIN
     """None when the candidate may be scored, else the reason it is skipped."""
     if not c.norm_clean:
         return "loudness could not be normalised cleanly"
+    if c.clicks:
+        return f"added {c.clicks} click{'s' if c.clicks != 1 else ''}"
+    if c.exempt:
+        return None
     if c.gain_db(ref) < min_gain:
         return f"clarity gain {c.gain_db(ref):.1f} dB < {min_gain:g} dB"
     if c.suppression_db < min_supp:
@@ -66,18 +72,18 @@ def eligible(c: Candidate, ref: Reference, *, min_gain: float = MIN_CLARITY_GAIN
     return None
 
 
-def native_ok(score: float, ref: Reference, tol: float = TOLERANCE) -> bool:
-    return score >= ref.native_score - tol
+def native_ok(score: float, ref: Reference) -> bool:
+    return score >= ref.native_score
 
 
-def loud_ok(score: float, ref: Reference, tol: float = TOLERANCE) -> bool:
-    return score >= ref.loud_score - tol
+def loud_ok(score: float, ref: Reference) -> bool:
+    return score >= ref.loud_score
 
 
 def choose(cands: Sequence[Candidate], ref: Reference,
            score_native: Callable[[list[Candidate]], dict[str, float]],
            score_loud: Callable[[list[Candidate]], dict[str, float]],
-           *, chunk: int = CHUNK, tol: float = TOLERANCE) -> Decision:
+           *, chunk: int = CHUNK) -> Decision:
     """Pick the cleanest verified candidate, spending as few Perch calls as possible.
 
     Candidates are tried from clearest to least clear, `chunk` at a time (each round = one batched Perch call for
@@ -102,20 +108,20 @@ def choose(cands: Sequence[Candidate], ref: Reference,
         survivors = []
         for c in batch:
             c.native_score = nat[c.id]
-            if native_ok(c.native_score, ref, tol):
+            if native_ok(c.native_score, ref):
                 survivors.append(c)
             else:
-                c.reason = f"Perch {c.native_score:.3f} < {ref.native_score - tol:.3f} at the original volume"
+                c.reason = f"Perch {c.native_score:.3f} < {ref.native_score:.3f} at the original volume"
         if not survivors:
             continue
         loud = score_loud(survivors)
         winners = []
         for c in survivors:
             c.loud_score = loud[c.id]
-            if loud_ok(c.loud_score, ref, tol):
+            if loud_ok(c.loud_score, ref):
                 winners.append(c)
             else:
-                c.reason = f"Perch {c.loud_score:.3f} < {ref.loud_score - tol:.3f} at the preview volume"
+                c.reason = f"Perch {c.loud_score:.3f} < {ref.loud_score:.3f} at the preview volume"
         if winners:
             best = max(winners, key=lambda c: c.contrast_db)
             for c in winners:

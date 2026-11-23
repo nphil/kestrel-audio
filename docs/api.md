@@ -18,7 +18,8 @@ body = the original clip
 ```
 
 * `scientific` is how the animal is found in Perch. Always pass it when you have it (BirdNET-Go's `scientificName`).
-  Without a name Perch knows, the preview is BirdNET-Go's own detection window, made loud and never cleaned.
+  When it is missing, the common name in `species` is looked up in the local species list instead. Without a name Perch
+  knows, the preview is BirdNET-Go's own detection window, made loud and never cleaned.
 * One job per `detection_id`. A repeat POST is a no-op that returns the current state. `force=1` re-runs it (and replaces a
   finished preview). Failed jobs are not retried unless `force=1`.
 * `priority=low` queues behind everything else (use it for back-filling old detections). Within a priority the NEWEST
@@ -40,12 +41,14 @@ DELETE /v1/previews/<detection_id>       -> 200 {"deleted": true|false}       (i
 | `detectionId` | the id you posted |
 | `state` | `pending` (queued or running), `ready`, or `failed` |
 | `segment` | `{start, end, source}`: where the preview sits **inside the original clip**, in seconds. `source` is `perch` (Perch found the moment), `fallback` (BirdNET-Go's own window: the species is unknown to Perch, or Perch is barely sure of it, best match under 0.10, so there is no real moment to find and nothing is cleaned) or `whole` (clip no longer than one Perch window) |
-| `method` | `trim` (the moment, made loud), `gate` (hiss reduction), `separate` (AI separation), `separate+gate` |
+| `method` | `trim` (the moment, made loud), `gate` (hiss reduction), `shape` (the background hushed between the calls and/or the pitches outside the animal's own range cut), `separate` (AI separation), `separate+gate`, `voice` (nothing but a human voice turned down) |
 | `cleaned` | `true` only when a clean-up passed the Perch re-check and was shipped |
-| `scores` | `{original, preview}`: how sure Perch is of the species on the untouched moment and on the shipped preview, both measured at the preview's loudness |
+| `scores` | `{original, preview}`: how sure Perch is of the species on the untouched moment and on the shipped preview, both measured at the preview's loudness. A shipped clean-up never scores lower than the untouched moment: not at the original volume, not at preview volume, not on the decoded AAC file (no tolerance) |
+| `speech` | `null`, or `{seconds, attenuated}` when a human voice was heard in the moment (a speech detector and Perch's own speech classes both have to hear it): for how many seconds, and what was done. `attenuated` is `full` (the stretch was turned down 40 dB), `outside` (the voice speaks over the call, so only the pitches outside the animal's own range were turned down) or `null` (it stays: turning it down cost Perch some of the animal, or Perch does not know the species and could not check) |
 | `alternatives` | **Could also be.** Up to three other species that Perch hears more strongly than the one you posted, strongest first, or `[]` when it hears nothing stronger, or `null` when the clip was not looked at (older job, no species list, `KESTREL_AUDIO_ALTERNATIVES=0`). Each is `{species, scientific, score, raw, windowsHigh, window}` — see below |
 | `announced` | Perch's own view of the species you posted, same shape as an alternative plus `rank` (1 = the local species Perch hears most strongly), or `null` when Perch has no such class or the clip was not looked at |
 | `loudnessLufs`, `durationS` | measured on the shipped file |
+| `loudnessHeldDb` | how far under the -16 LUFS target the preview was left on purpose (0 = at the target). The target is a ceiling: the gain stops where the calls would be squashed by the limiter or the background would be lifted past -30 dBFS |
 | `createdAt`, `readyAt` | ISO 8601 UTC |
 | `queuePosition` | 1 = next; `0` while running; `null` otherwise |
 | `error` | why a `failed` job failed |

@@ -23,9 +23,28 @@ def scorer(table):
     return fn
 
 
-def test_tolerance_is_two_hundredths_below_the_untouched_moment():
-    assert native_ok(0.585, REF) and not native_ok(0.575, REF)
-    assert loud_ok(0.485, REF) and not loud_ok(0.475, REF)
+def test_there_is_no_tolerance_a_clean_up_that_costs_perch_anything_fails():
+    assert native_ok(0.60, REF) and not native_ok(0.599, REF)
+    assert loud_ok(0.50, REF) and not loud_ok(0.499, REF)
+    dec = choose([cand("x", gain=9)], REF, scorer({"x": 0.599}), scorer({"x": 0.9}))
+    assert dec.choice is None and "original volume" in dec.considered[0].reason
+
+
+def test_a_candidate_that_adds_a_click_is_not_even_scored():
+    clicky = Candidate("a", REF.contrast_db + 10.0, 10.0, True, clicks=2)
+    assert "2 clicks" in eligible(clicky, REF)
+    nat = scorer({})
+    assert choose([clicky], REF, nat, scorer({})).choice is None and nat.calls == []
+
+
+def test_a_voice_only_candidate_need_not_gain_clarity_but_must_still_pass_perch():
+    def quiet_voice(**kw):
+        return Candidate("V2", REF.contrast_db - 0.5, 0.0, True, exempt=True, **kw)
+
+    assert eligible(quiet_voice(), REF) is None
+    assert eligible(quiet_voice(clicks=1), REF) is not None
+    assert choose([quiet_voice()], REF, scorer({"V2": 0.60}), scorer({"V2": 0.50})).choice.candidate.id == "V2"
+    assert choose([quiet_voice()], REF, scorer({"V2": 0.59}), scorer({"V2": 0.50})).choice is None
 
 
 def test_candidates_that_do_not_help_enough_are_not_even_scored():

@@ -17,6 +17,7 @@ from .perch import LABELS_FILE, OrtPerch
 from .pipeline import Preview, PreviewError, finalize, make_preview
 from .scoring import Hit, pick_alternatives, rank_species
 from .species import Labels, LocalSpecies
+from .speech import VAD_FILE, SileroVad, SpeechDetector, voice_classes
 
 log = logging.getLogger("kestrel_audio.engine")
 
@@ -32,6 +33,8 @@ class Engine:
         self._local: tuple[tuple[str, int, int], LocalSpecies] | None = None    # the species list in use, and the file stamp it was read at
         self._unusable: tuple[str, int, int] | None = None                      # stamp of a list that could not be read (warn once)
         self._separators: list[LazySeparator] | None = None
+        self._speech: SpeechDetector | None = None
+        self._speech_missing = False
         self.codec = AacCodec()
         self.footprint = gpu.Footprint() if device == "cuda" else None    # remembers who used the GPU before we did; claim() pins our PID
         self.last_peak_mib: int | None = None
@@ -63,6 +66,18 @@ class Engine:
                               vram_mib=self.separator_arena_mib)
                 for k, fname in MIXIT_FILES.items() if (self.cfg.models_dir / fname).exists()]
         return self._separators
+
+    @property
+    def speech(self) -> SpeechDetector | None:
+        """The listener for human voices, or None when its model file is not there (previews are then made as before it existed)."""
+        if self._speech is None and not self._speech_missing:
+            path = self.cfg.models_dir / VAD_FILE
+            if path.exists():
+                self._speech = SpeechDetector(SileroVad(path), self.labels.events, voice_classes(self.labels))
+            else:
+                self._speech_missing = True
+                log.warning("%s is missing: human voices in previews will not be looked for", path)
+        return self._speech
 
     def vram_mib(self) -> int | None:
         """GPU memory this process holds right now (None on the CPU path or when the driver cannot say)."""
@@ -117,14 +132,21 @@ class Engine:
         idx = self.labels.find(scientific)
         cleanup = self.device == "cuda" or self.cfg.cpu_cleanup
         local = self.local_species() if self.cfg.alternatives > 0 else None
+        matched_by_name: str | None = None
+        if idx is None and not scientific and species:
+            # The detection came without its scientific name (seen on about one clip in nine): the common name still says which
+            # species it is, as long as the local list knows it.
+            names = local if local is not None else self.local_species()
+            idx = names.find_common(species) if names is not None else None
+            matched_by_name = self.labels.names[idx] if idx is not None else None
         t_dec = time.perf_counter() - t0
         scorer = self.perch if idx is not None else None
         # One Perch pass over the whole clip serves the search for the matched moment AND the alternatives. Without a species list, and
         # for a clip too short to search, there is nothing to ask for.
         surveyor = self.perch.survey if (local is not None or (idx is not None and len(x22) / SR > WIN)) else None
         with gpu.PeakSampler(self.footprint) as peak:
-            prev = make_preview(x22, species_idx=idx, scorer=scorer,
-                                separators=self.separators if (cleanup and idx is not None) else [], cleanup=cleanup, surveyor=surveyor)
+            prev = make_preview(x22, species_idx=idx, scorer=scorer, separators=self.separators if (cleanup and idx is not None) else [],
+                                cleanup=cleanup, surveyor=surveyor, speech=self.speech if cleanup else None)
             shipped, prev = finalize(prev, codec=self.codec, scorer=scorer, species_idx=idx)
         self.last_peak_mib = peak.peak
         out = Path(out_path)
@@ -138,6 +160,13 @@ class Engine:
         notes = list(prev.notes)
         if idx is None:
             notes.append("no scientific name Perch knows" if scientific else "no scientific name was given")
+        elif matched_by_name is not None:
+            notes.append(f"no scientific name was given; went by the common name ({matched_by_name})")
+        norm = prev.norm
+        if norm.tamed_db >= 3.0:
+            notes.append(f"a pop or knock was turned down {norm.tamed_db:.0f} dB so it does not set the volume")
+        if norm.held_db >= 3.0:
+            notes.append(f"left {norm.held_db:.0f} dB under the loudness target: louder would have squashed the calls or lifted the background")
         said = self.alternatives(prev, local, idx, species) if local is not None else None
         if self.cfg.alternatives > 0 and local is None:
             notes.append("no species list could be read, so no alternatives")
@@ -153,7 +182,9 @@ class Engine:
             "alternatives": alternatives,
             "announced": announced,
             "localSpecies": None if local is None else local.summary(),
+            "speech": None if prev.voice is None else {"seconds": round(prev.voice.seconds, 2), "attenuated": prev.voice_attenuated},
             "loudnessLufs": round(shipped.lufs, 2),
+            "loudnessHeldDb": round(norm.held_db, 1),
             "truePeakDbtp": round(shipped.true_peak_db, 2),
             "durationS": round(shipped.duration_s, 2),
             "notes": notes,

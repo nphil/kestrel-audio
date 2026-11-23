@@ -152,5 +152,12 @@ class LocalSpecies:
         return LocalSpecies(np.union1d(self.members, [idx]).astype(np.int64), np.union1d(self.species, [idx]).astype(np.int64),
                             self.common, self.total, self.matched, self.source, self.updated_at)
 
+    def find_common(self, name: str | None) -> int | None:
+        """Perch class index of the local species with this common name ('Blue Jay'), for a detection that came without its scientific one."""
+        key = normalise(name) if name else ""
+        if not key:
+            return None
+        return next((i for i, c in self.common.items() if normalise(c) == key), None)
+
     def summary(self) -> dict[str, Any]:
         return {"count": self.total, "matched": self.matched, "source": self.source, "updatedAt": self.updated_at}

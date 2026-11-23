@@ -56,6 +56,12 @@ def test_a_species_birdnet_go_named_always_competes_even_if_the_list_lacks_it():
     assert s.including(JAY) is s and s.including(None) is s
 
 
+def test_a_detection_without_its_scientific_name_is_found_by_its_common_one():
+    s = local()
+    assert s.find_common("Blue Jay") == JAY and s.find_common(" blue  jay ") == JAY       # spelled as BirdNET-Go spells it, more or less
+    assert s.find_common("Nowhere Thrush") is None and s.find_common("") is None and s.find_common(None) is None
+
+
 def test_list_formats():
     plain = parse_local_list([{"scientific": "Strix varia", "common": "Barred Owl"}])
     bng = parse_local_list({"source": "BirdNET-Go", "updatedAt": "2026-10-03T21:30:39-04:00",

@@ -92,13 +92,14 @@ def job_info(job: Job, store: Store) -> dict[str, Any]:
     state = PENDING if job.state in (PENDING, RUNNING) else job.state
     body: dict[str, Any] = {
         "detectionId": job.detection_id, "state": state, "segment": None, "method": None, "cleaned": False, "scores": None,
-        "loudnessLufs": None, "durationS": None, "createdAt": iso(job.created_at), "readyAt": None,
+        "loudnessLufs": None, "loudnessHeldDb": None, "durationS": None, "createdAt": iso(job.created_at), "readyAt": None,
         "queuePosition": 0 if job.state == RUNNING else store.queue_position(job), "error": None,
-        "alternatives": None, "announced": None,
+        "alternatives": None, "announced": None, "speech": None,
     }
     if job.state == READY and job.info:
         i = job.info
-        body.update({k: i.get(k) for k in ("segment", "method", "cleaned", "scores", "loudnessLufs", "durationS", "alternatives", "announced")})
+        body.update({k: i.get(k) for k in ("segment", "method", "cleaned", "scores", "loudnessLufs", "loudnessHeldDb", "durationS", "alternatives",
+                                           "announced", "speech")})
         body["cleaned"] = bool(i.get("cleaned"))
         body["readyAt"] = iso(job.finished_at)
         body["variant"] = i.get("variant")

@@ -5,6 +5,7 @@
 #  * Google Perch v2 (ONNX, FP32) comes from the Hugging Face mirror that BirdNET-Go's author maintains.
 #  * Google's bird MixIT checkpoints are TensorFlow 1 graphs: they are converted to ONNX here. TensorFlow exists only in
 #    this stage; the runtime image below runs everything through onnxruntime.
+#  * Silero VAD (ONNX, 2 MB, MIT) says when a human voice is speaking; pinned to the commit of release v6.2.
 FROM python:3.11-slim-bookworm AS models
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
@@ -18,6 +19,9 @@ RUN curl -fsSL --retry 5 --retry-delay 5 -o /models/perch_v2_no_dft_fp32.onnx "$
  && echo "4dcf71c18a147198545944bb5149697e89e3ad2e16637fa8f0edf6d13035a017  /models/perch_v2_no_dft_fp32.onnx" | sha256sum -c - \
  && curl -fsSL --retry 5 --retry-delay 5 -o /models/perch_v2_labels.txt "$PERCH_BASE/perch_v2_labels.txt" \
  && echo "e4d5c0397d8fb08bf90c6b13a34810af53504faad927e472fcc567793c9de057  /models/perch_v2_labels.txt" | sha256sum -c -
+ARG SILERO_VAD_URL=https://github.com/snakers4/silero-vad/raw/5cd7945676eb32225748052e2e6a0580e4686a08/src/silero_vad/data/silero_vad.onnx
+RUN curl -fsSL --retry 5 --retry-delay 5 -o /models/silero_vad.onnx "$SILERO_VAD_URL" \
+ && echo "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3  /models/silero_vad.onnx" | sha256sum -c -
 
 # ---------------------------------------------------------------------------------------------------------------------
 # Stage 2 - the service. CUDA 12 + cuDNN 9 runtime libraries (onnxruntime-gpu 1.26 is the last build for CUDA 12; newer ones

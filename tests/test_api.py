@@ -124,8 +124,8 @@ def test_info_always_has_every_field(env):
     assert client.get("/v1/previews/4/info", headers=H).status_code == 404
     post(client, 4)
     pending = client.get("/v1/previews/4/info", headers=H).json()
-    fields = {"detectionId", "state", "segment", "method", "cleaned", "scores", "loudnessLufs", "durationS", "createdAt", "readyAt",
-              "queuePosition", "error"}
+    fields = {"detectionId", "state", "segment", "method", "cleaned", "scores", "loudnessLufs", "loudnessHeldDb", "durationS", "createdAt",
+              "readyAt", "queuePosition", "error", "speech"}
     assert fields <= set(pending)
     assert pending["state"] == "pending" and pending["segment"] is None and pending["cleaned"] is False and pending["error"] is None
     finish(store, 4)

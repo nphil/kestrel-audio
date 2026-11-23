@@ -115,8 +115,11 @@ def main() -> None:
         time.sleep(3)
     assert info.get("state") == "ready", f"job did not finish ready: {info}"
     assert info["segment"] and info["method"] == "trim" and info["cleaned"] is False, info
-    assert -17.5 < info["loudnessLufs"] < -14.5, f"loudness {info['loudnessLufs']}"
-    print("job ready:", {k: info[k] for k in ("segment", "method", "loudnessLufs", "durationS")})
+    # the loudness target is a ceiling: this clip's hiss is strong, so it stops short of -16 LUFS by what it says it held back
+    held = info["loudnessHeldDb"]
+    assert 0.0 <= held <= 9.0 and abs(info["loudnessLufs"] - (-16.0 - held)) < 1.5, f"loudness {info['loudnessLufs']}, held {held}"
+    assert info["speech"] is None, info["speech"]
+    print("job ready:", {k: info[k] for k in ("segment", "method", "loudnessLufs", "loudnessHeldDb", "durationS")})
 
     # what Perch makes of the clip: always present, and a list (possibly empty) because the built-in species list is in the image
     assert isinstance(info["alternatives"], list) and len(info["alternatives"]) <= 3, info.get("alternatives")
@@ -146,6 +149,7 @@ def main() -> None:
         "import numpy as np\n"
         "from kestrel_audio.mixit import OrtMixit\n"
         "from kestrel_audio.perch import OrtPerch\n"
+        "from kestrel_audio.speech import SileroVad\n"
         "x = (0.1 * np.random.default_rng(0).standard_normal(22050 * 6)).astype('float32')\n"
         "for k in (4, 8):\n"
         "    y = OrtMixit(f'/models/mixit{k}.onnx', k, device='cpu', threads=2, vram_mib=0).separate(x)\n"
@@ -155,6 +159,9 @@ def main() -> None:
         "s = p.score([x], 0)[0]\n"
         "assert len(s.starts) >= 2 and np.isfinite(s.conf).all()\n"
         "print('perch ok', len(p.labels), 'labels,', len(s.starts), 'windows')\n"
+        "v = SileroVad('/models/silero_vad.onnx')(x)\n"
+        "assert len(v) > 150 and np.isfinite(v).all() and 0.0 <= v.min() and v.max() <= 1.0, v\n"
+        "print('silero vad ok', len(v), 'answers, highest', round(float(v.max()), 3))\n"
     )
     print(sh("docker", "exec", NAME, "python", "-c", code))
 
